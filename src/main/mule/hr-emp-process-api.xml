@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd">
+	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="0320929a-b285-4421-aa30-b52b34d44b98" >
+		<http:listener-connection host="0.0.0.0" port="8082" />
+	</http:listener-config>
+	<flow name="hr-emp-process-apiFlow" doc:id="42fd047f-0b20-4943-b5d1-aafcc3ad8f9a" >
+		<http:listener doc:name="Listener" doc:id="b4e072f2-2d0a-46ea-9888-30536a4f4d7b" config-ref="HTTP_Listener_config" path="/import-employees" allowedMethods="POST"/>
+		<set-payload value='#[output application/json --- { message: "received", fileName: attributes.queryParams.fileName, rows: sizeOf(payload) }]' doc:name="Set Payload" doc:id="5eb4c990-2212-468c-8f22-d5ac721d5b81" />
+	</flow>
+</mule>
