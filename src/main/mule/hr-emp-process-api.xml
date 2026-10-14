@@ -1,59 +1,530 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<mule xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http"
+<mule xmlns:email="http://www.mulesoft.org/schema/mule/email"
+	xmlns:file="http://www.mulesoft.org/schema/mule/file"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
 	xmlns="http://www.mulesoft.org/schema/mule/core"
-	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
-http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
-http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
-	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="62cc8d9b-b6a1-47f0-880d-8680a76dc83d" >
-		<http:listener-connection host="0.0.0.0" port="8082" />
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+		http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+		http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+		http://www.mulesoft.org/schema/mule/email http://www.mulesoft.org/schema/mule/email/current/mule-email.xsd">
+
+	<!-- Configuration Properties -->
+	<configuration-properties file="config.properties" doc:name="Configuration properties" />
+
+	<!-- Global Configuration and Error Handler -->
+	<configuration defaultErrorHandler-ref="global-error-handler" doc:name="Configuration" />
+
+	<!-- File Connector Config -->
+	<file:config name="File_Config" doc:name="File Config">
+		<file:connection workingDir="${file.workingDir}" />
+	</file:config>
+
+	<!-- HTTP Listener for Process API triggers -->
+	<http:listener-config name="Process_HTTP_Listener_Config" doc:name="HTTP Listener config">
+		<http:listener-connection host="0.0.0.0" port="${process.http.port}" />
 	</http:listener-config>
-	<http:request-config name="System_API_Config" doc:name="HTTP Request configuration" doc:id="8b75c057-ae88-4fd4-aa91-7afd85491351" basePath="/api" >
-		<http:request-connection host="localhost" port="8081" />
+
+	<!-- HTTP Request Config for System API -->
+	<http:request-config name="System_API_Config" doc:name="System API Config" basePath="${sys.api.basePath}">
+		<http:request-connection host="${sys.api.host}" port="${sys.api.port}" />
 	</http:request-config>
-	<http:request-config name="HTTP_Request_configuration" doc:name="HTTP Request configuration" doc:id="a86cfae9-b89a-4086-8b7b-c3794913fcf6" basePath="/api" >
-		<http:request-connection host="localhost" port="8081" />
-	</http:request-config>
-	<flow name="hr-emp-process-apiFlow" doc:id="fb093690-5828-415b-bff7-a0f5b6e3dc13" >
-		<http:listener doc:name="Listener" doc:id="0fe446cd-1126-48da-8fbd-28c40e6692fb" config-ref="HTTP_Listener_config" path="/import-employees" allowedMethods="POST"/>
-		<set-variable value="#[payload]" doc:name="Save rows" doc:id="34520341-bc00-4a40-bd85-a99a2d9dc381" variableName="rows"/>
-		<set-payload value='#[output application/json --- { message: "received", fileName: attributes.queryParams.fileName, rows: sizeOf(payload) }]' doc:name="Set Payload" doc:id="71e418a4-2b71-4dab-9d93-889502d779d1" />
-		<http:request method="GET" doc:name="Get departments" doc:id="cc7aec86-9b3d-4461-8b1d-b2162ab02c92" config-ref="System_API_Config" path="/departments" target="departments"/>
-		<http:request method="GET" doc:name="Get locations" doc:id="f5dea4c6-3ba1-4f70-9a62-e7fa50b5f7cf" config-ref="System_API_Config" path="/locations" target="locations"/>
-		<ee:transform doc:name="Transform Message" doc:id="5b6113d9-0ba5-4e70-82d8-2d461b5fe963" >
-			<ee:message >
-				<ee:set-payload ><![CDATA[%dw 2.0
+
+	<!-- Email SMTP Config -->
+	<email:smtp-config name="Email_SMTP_Config" doc:name="Email SMTP Config">
+		<email:smtp-connection host="${smtp.host}" port="${smtp.port}" />
+	</email:smtp-config>
+
+	<!-- Global Error Handler -->
+	<error-handler name="global-error-handler" doc:name="Global Error Handler">
+		<on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate">
+			<!-- Sensitive data like DOB or mobile are NEVER logged -->
+			<logger level="ERROR" doc:name="Log error" message="#[output text/plain --- &quot;[&quot; ++ (vars.runId default 'N/A') ++ &quot;] File processing failed for: &quot; ++ (vars.fileName default 'unknown') ++ &quot;. Error: &quot; ++ (error.description default 'Unknown error')]"/>
+			<set-variable value="FAILED" variableName="runStatus"/>
+			<try doc:name="Try Update DB Run Status">
+				<choice doc:name="Has Run ID?">
+					<when expression="#[vars.runId != null]">
+						<http:request method="PUT" doc:name="Update Run Status to FAILED" config-ref="System_API_Config" path="#['/import-runs/' ++ vars.runId]">
+							<http:body><![CDATA[#[output application/json --- {
+								parsedCount: vars.parsedCount default 0,
+								insertedCount: vars.insertedCount default 0,
+								updatedCount: vars.updatedCount default 0,
+								rejectedCount: vars.rejectedCount default 0,
+								rejectPercent: vars.rejectPercent default 0.0,
+								runStatus: "FAILED",
+								rejectFilePath: vars.rejectFilePath default null
+							}]]]></http:body>
+						</http:request>
+					</when>
+				</choice>
+				<error-handler>
+					<on-error-continue doc:name="Ignore DB update error on failure">
+						<logger level="WARN" doc:name="Log DB update fail" message="Could not update run status in database on error"/>
+					</on-error-continue>
+				</error-handler>
+			</try>
+			<try doc:name="Try Send Failure Notification">
+				<flow-ref name="subflow-send-summary-email" doc:name="Send failure email"/>
+				<error-handler>
+					<on-error-continue doc:name="Ignore notification error">
+						<logger level="WARN" doc:name="Log notification fail" message="Could not send failure notification email"/>
+					</on-error-continue>
+				</error-handler>
+			</try>
+			<choice doc:name="Is File Trigger For Error Move?">
+				<when expression="#[vars.isFileTrigger == true]">
+					<try doc:name="Try Move to error folder">
+						<file:move doc:name="Move to error folder" config-ref="File_Config" sourcePath="#['inbound/' ++ vars.fileName]" targetPath="${file.errorDir}" overwrite="true"/>
+						<error-handler>
+							<on-error-continue doc:name="Ignore move failure">
+								<logger level="WARN" doc:name="Log move failure" message="Could not move file to error directory"/>
+							</on-error-continue>
+						</error-handler>
+					</try>
+				</when>
+			</choice>
+		</on-error-propagate>
+	</error-handler>
+
+	<!-- File Intake Flow (Directory Watcher) -->
+	<flow name="hr-emp-file-intake-flow" doc:name="HR Emp File Intake Flow">
+		<file:listener doc:name="On Inbound File" config-ref="File_Config" directory="${file.inboundDir}" autoDelete="false">
+			<scheduling-strategy>
+				<fixed-frequency frequency="5000"/>
+			</scheduling-strategy>
+		</file:listener>
+		<set-variable value="#[attributes.fileName]" doc:name="Set fileName" variableName="fileName"/>
+		<set-variable value="#[payload]" doc:name="Set rawContent" variableName="rawContent"/>
+		<set-variable value="#[true]" doc:name="Set isFileTrigger" variableName="isFileTrigger"/>
+		<logger level="INFO" doc:name="Log file detected" message='#["New employee import file detected: " ++ vars.fileName]'/>
+		<flow-ref name="hr-emp-main-orchestration-flow" doc:name="Call main orchestration"/>
+		<error-handler>
+			<on-error-continue doc:name="File Intake Error Handled">
+				<logger level="INFO" doc:name="Log File Intake Done on Error" message="File intake flow completed error handling."/>
+			</on-error-continue>
+		</error-handler>
+	</flow>
+
+	<!-- HTTP Trigger Flow (for API-led invocation and testing) -->
+	<flow name="hr-emp-http-trigger-flow" doc:name="HR Emp HTTP Trigger Flow">
+		<http:listener doc:name="Import HTTP Listener" config-ref="Process_HTTP_Listener_Config" path="/import-employees" allowedMethods="POST">
+			<http:response statusCode="#[vars.httpStatus default 200]"/>
+			<http:error-response statusCode="#[vars.httpStatus default 500]">
+				<http:body>#[payload]</http:body>
+			</http:error-response>
+		</http:listener>
+		<set-variable value="#[attributes.queryParams.fileName default ('import_' ++ (now() as String {format: 'yyyyMMddHHmmss'}) ++ '.csv')]" doc:name="Set fileName" variableName="fileName"/>
+		<set-variable value="#[payload]" doc:name="Set rawContent" variableName="rawContent"/>
+		<set-variable value="#[false]" doc:name="Set isFileTrigger" variableName="isFileTrigger"/>
+		<flow-ref name="hr-emp-main-orchestration-flow" doc:name="Call main orchestration"/>
+		<ee:transform doc:name="Format HTTP Response">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
 output application/json
-var deptKeys = vars.departments map ($.department_key as String)
-var locKeys = vars.locations map ($.location_key as String)
-var checked = vars.rows map (r) -> r ++ {
-  reason: if (!(deptKeys contains (r.department_key as String))) "Invalid department_key"
-          else if (!(locKeys contains (r.location_key as String))) "Invalid location_key"
-          else if (!((r.official_email default "") matches /^[^@\s]+@[^@\s]+\.[^@\s]+$/)) "Invalid official_email"
-          else null
-}
 ---
 {
-  valid: checked filter ($.reason == null) map ($ - "reason"),
-  invalid: checked filter ($.reason != null)
+	runId: vars.runId,
+	fileName: vars.fileName,
+	fileFormat: vars.fileFormat,
+	runStatus: vars.runStatus,
+	declaredCount: vars.declaredCount,
+	parsedCount: vars.parsedCount,
+	insertedCount: vars.insertedCount,
+	updatedCount: vars.updatedCount,
+	rejectedCount: vars.rejectedCount,
+	rejectPercent: vars.rejectPercent,
+	rejectFilePath: vars.rejectFilePath
 }]]></ee:set-payload>
 			</ee:message>
 		</ee:transform>
-		<set-variable value="#[payload]" doc:name="Save split" doc:id="95085d09-c830-4186-8c04-08be32470b08" variableName="split"/>
-		<http:request method="POST" doc:name="Save valid employees" doc:id="12b3d4a0-5cbf-44b9-b2d9-a49652024d9a" config-ref="HTTP_Request_configuration" path="/employees/batch">
-			<http:body ><![CDATA[#[vars.split.valid]]]></http:body>
-		</http:request>
-		<foreach doc:name="For Each" doc:id="0aad2640-f2fd-415c-9644-82e979d964dc" collection="#[vars.split.invalid]">
-			<http:request method="POST" doc:name="Save rejects" doc:id="034ac1e2-afd2-4595-b754-61ad17abe559" path="/import-rejects" config-ref="System_API_Config">
-				<http:body><![CDATA[#[output application/json ---
-{
-    run_id: payload.source_run_id default "run-001",
-  record_index: vars.counter,
-  employee_id: payload.employee_id,
-  reject_code: if (payload.reason contains "email") "INVALID_EMAIL" else "INVALID_REFERENCE",
-  reject_reason: payload.reason
-}]]]></http:body>
-			</http:request>
-		</foreach>
 	</flow>
+
+	<!-- Main Orchestration Flow -->
+	<flow name="hr-emp-main-orchestration-flow" doc:name="Main Orchestration Flow">
+		<!-- Step 1: Initialize metadata, timestamps, checksum -->
+		<ee:transform doc:name="Initialize Run Context">
+			<ee:variables>
+				<ee:set-variable variableName="startedAt"><![CDATA[%dw 2.0
+output application/java
+---
+now() as String {format: "yyyy-MM-dd'T'HH:mm:ss"}]]></ee:set-variable>
+				<ee:set-variable variableName="runId"><![CDATA[%dw 2.0
+output application/java
+---
+"RUN-" ++ (now() as String {format: "yyyyMMddHHmmss"}) ++ "-" ++ (uuid()[0 to 7])]]></ee:set-variable>
+				<ee:set-variable variableName="correlationId"><![CDATA[%dw 2.0
+output application/java
+---
+correlationId default uuid()]]></ee:set-variable>
+				<ee:set-variable variableName="fileFormat"><![CDATA[%dw 2.0
+output application/java
+var ext = lower((vars.fileName splitBy ".")[-1] default "")
+var contentStr = if (vars.rawContent is Binary) (vars.rawContent as String default "") else if (vars.rawContent is String) vars.rawContent else ""
+---
+if (ext == "xml" or (contentStr startsWith "<")) "XML" else "CSV"]]></ee:set-variable>
+				<ee:set-variable variableName="fileChecksum"><![CDATA[%dw 2.0
+import dw::Crypto
+import dw::core::Binaries
+output application/java
+var rawBin = if (vars.rawContent is Binary) (vars.rawContent as Binary)
+             else if (vars.rawContent is String) (vars.rawContent as Binary)
+             else (write(vars.rawContent, "application/json") as Binary)
+---
+Binaries::toHex(Crypto::hashWith(rawBin, "SHA-256"))]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+
+		<logger level="INFO" doc:name="Log run start" message='#["Starting Run [" ++ vars.runId ++ "] for file: " ++ vars.fileName ++ " (" ++ vars.fileFormat ++ ") Checksum: " ++ vars.fileChecksum]'/>
+
+		<!-- Step 2: Duplicate File Check against Database -->
+		<http:request method="GET" doc:name="Check Duplicate File Run" config-ref="System_API_Config" path="/import-runs" target="existingRuns">
+			<http:query-params><![CDATA[#[{
+				fileName: vars.fileName,
+				checksum: vars.fileChecksum
+			}]]]></http:query-params>
+		</http:request>
+
+		<choice doc:name="Is Duplicate File?">
+			<when expression="#[sizeOf(vars.existingRuns default []) &gt; 0 and ((vars.existingRuns[0].run_status default '') != 'STARTED')]">
+				<logger level="WARN" doc:name="Log duplicate file" message='#["Duplicate file detected: " ++ vars.fileName ++ " with checksum " ++ vars.fileChecksum ++ ". Skipping import."]'/>
+				<set-variable value="DUPLICATE_FILE" variableName="runStatus"/>
+				<choice doc:name="Is File Trigger?">
+					<when expression="#[vars.isFileTrigger == true]">
+						<file:move doc:name="Archive duplicate file" config-ref="File_Config" sourcePath="#['inbound/' ++ vars.fileName]" targetPath="${file.archiveDir}" overwrite="true"/>
+					</when>
+				</choice>
+			</when>
+			<otherwise>
+				<!-- Create initial run record in DB -->
+				<http:request method="POST" doc:name="Create Run Record" config-ref="System_API_Config" path="/import-runs">
+					<http:body><![CDATA[#[output application/json --- {
+						runId: vars.runId,
+						fileName: vars.fileName,
+						fileFormat: vars.fileFormat,
+						fileChecksum: vars.fileChecksum,
+						declaredCount: null,
+						runStatus: "STARTED",
+						correlationId: vars.correlationId
+					}]]]></http:body>
+				</http:request>
+
+				<!-- Step 3: Format-Agnostic Parsing and File-Level Validation -->
+				<ee:transform doc:name="Parse and Canonicalize Payload">
+					<ee:variables>
+						<ee:set-variable variableName="canonicalData"><![CDATA[%dw 2.0
+output application/json
+
+var raw = vars.rawContent
+var isXml = vars.fileFormat == "XML"
+
+var parsed = if (raw is Binary or raw is String) (
+	if (isXml) read(raw, "application/xml")
+	else read(raw, "application/csv", {header: true})
+) else raw
+
+var records = if (isXml) (
+	if (parsed.employeeImport != null and parsed.employeeImport.employees != null) (
+		(parsed.employeeImport.employees.*employee default [])
+	) else []
+) else (
+	(parsed default [])
+)
+
+var declared = if (isXml) (
+	if (parsed.employeeImport != null and parsed.employeeImport.header != null and parsed.employeeImport.header.recordCount != null) (
+		parsed.employeeImport.header.recordCount as Number default null
+	) else null
+) else null
+
+var source = if (isXml) (
+	if (parsed.employeeImport != null and parsed.employeeImport.header != null and parsed.employeeImport.header.sourceSystem != null) (
+		parsed.employeeImport.header.sourceSystem
+	) else "HRMS-XML"
+) else "HRMS-CSV"
+
+---
+{
+	sourceSystem: source,
+	declaredCount: declared,
+	records: records map ((emp, idx) -> {
+		recordIndex: idx + 1,
+		employeeId: trim(emp.employeeId default ""),
+		firstName: trim(emp.firstName default ""),
+		lastName: trim(emp.lastName default ""),
+		dateOfBirth: trim(emp.dateOfBirth default ""),
+		dateOfJoining: trim(emp.dateOfJoining default ""),
+		officialEmail: trim(emp.officialEmail default ""),
+		mobile: trim(emp.mobile default ""),
+		departmentCode: trim(emp.departmentCode default ""),
+		designation: trim(emp.designation default ""),
+		locationCode: trim(emp.locationCode default ""),
+		employmentType: trim(emp.employmentType default ""),
+		managerId: trim(emp.managerId default "")
+	})
+}]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+
+				<set-variable value="#[vars.canonicalData.sourceSystem]" variableName="sourceSystem"/>
+				<set-variable value="#[vars.canonicalData.declaredCount]" variableName="declaredCount"/>
+				<set-variable value="#[vars.canonicalData.records]" variableName="canonicalRecords"/>
+				<set-variable value="#[sizeOf(vars.canonicalRecords default [])]" variableName="parsedCount"/>
+
+				<!-- File-Level Validation: Declared Count Mismatch -->
+				<choice doc:name="Check Declared Count Mismatch">
+					<when expression="#[vars.declaredCount != null and (vars.declaredCount != vars.parsedCount)]">
+						<raise-error doc:name="Raise Declared Count Mismatch" type="APP:DECLARED_COUNT_MISMATCH" description='#["Declared record count (" ++ vars.declaredCount ++ ") does not match parsed count (" ++ vars.parsedCount ++ ")"]'/>
+					</when>
+				</choice>
+
+				<!-- Handle Empty File Gracefully -->
+				<choice doc:name="Is File Empty?">
+					<when expression="#[vars.parsedCount == 0]">
+						<logger level="INFO" doc:name="Log empty file" message='#["[" ++ vars.runId ++ "] Empty file received with 0 records. Completing gracefully."]'/>
+						<set-variable value="0" variableName="insertedCount"/>
+						<set-variable value="0" variableName="updatedCount"/>
+						<set-variable value="0" variableName="rejectedCount"/>
+						<set-variable value="0.0" variableName="rejectPercent"/>
+						<set-variable value="SUCCESS_EMPTY" variableName="runStatus"/>
+						<set-variable value="#[[]]" variableName="invalidRecords"/>
+						<set-variable value="#[null]" variableName="rejectFilePath"/>
+
+						<http:request method="PUT" doc:name="Update Run Empty" config-ref="System_API_Config" path="#['/import-runs/' ++ vars.runId]">
+							<http:body><![CDATA[#[output application/json --- {
+								parsedCount: 0,
+								insertedCount: 0,
+								updatedCount: 0,
+								rejectedCount: 0,
+								rejectPercent: 0.0,
+								runStatus: "SUCCESS_EMPTY",
+								rejectFilePath: null
+							}]]]></http:body>
+						</http:request>
+
+						<flow-ref name="subflow-send-summary-email" doc:name="Send empty summary email"/>
+						<choice doc:name="Is File Trigger?">
+							<when expression="#[vars.isFileTrigger == true]">
+								<file:move doc:name="Archive empty file" config-ref="File_Config" sourcePath="#['inbound/' ++ vars.fileName]" targetPath="${file.archiveDir}" overwrite="true"/>
+							</when>
+						</choice>
+					</when>
+					<otherwise>
+						<!-- Step 4: Fetch Reference Data from System API -->
+						<http:request method="GET" doc:name="Get Departments" config-ref="System_API_Config" path="/departments" target="departments"/>
+						<http:request method="GET" doc:name="Get Locations" config-ref="System_API_Config" path="/locations" target="locations"/>
+						<http:request method="GET" doc:name="Get Designations" config-ref="System_API_Config" path="/designations" target="designations"/>
+						<http:request method="GET" doc:name="Get DB Employees" config-ref="System_API_Config" path="/employees" target="existingEmployees"/>
+
+						<!-- Step 5: Record Validation, Reference Enrichment, Forward Manager Resolution -->
+						<ee:transform doc:name="Validate and Enrich Records">
+							<ee:message>
+								<ee:set-payload resource="dwl/validateAndEnrich.dwl" />
+							</ee:message>
+						</ee:transform>
+
+						<set-variable value="#[payload.valid]" variableName="validRecords"/>
+						<set-variable value="#[payload.invalid]" variableName="invalidRecords"/>
+						<set-variable value="#[sizeOf(vars.invalidRecords)]" variableName="rejectedCount"/>
+						<set-variable value="#[if (vars.parsedCount &gt; 0) ((vars.rejectedCount * 100.0) / vars.parsedCount) else 0.0]" variableName="rejectPercent"/>
+
+						<logger level="INFO" doc:name="Log validation counts" message="#[output text/plain --- &quot;[&quot; ++ (vars.runId default '') ++ &quot;] Parsed: &quot; ++ (vars.parsedCount as String default '0') ++ &quot;, Valid: &quot; ++ (sizeOf(vars.validRecords default []) as String) ++ &quot;, Rejected: &quot; ++ (vars.rejectedCount as String default '0') ++ &quot; (&quot; ++ (vars.rejectPercent as String default '0') ++ &quot;%)&quot;]"/>
+
+						<!-- Step 6: Threshold Abort Check -->
+						<choice doc:name="Check Threshold Exceeded">
+							<when expression="#[vars.rejectPercent &gt; (p('import.threshold') as Number)]">
+								<logger level="WARN" doc:name="Log threshold exceeded" message="#[output text/plain --- &quot;[&quot; ++ (vars.runId default '') ++ &quot;] Rejection percentage (&quot; ++ (vars.rejectPercent as String default '0') ++ &quot;%) exceeds configured threshold. Aborting persistence.&quot;]"/>
+								<set-variable value="0" variableName="insertedCount"/>
+								<set-variable value="0" variableName="updatedCount"/>
+								<set-variable value="ABORTED_THRESHOLD" variableName="runStatus"/>
+
+								<!-- Persist rejects to DB audit -->
+								<choice doc:name="Has Rejects to Save?">
+									<when expression="#[vars.rejectedCount &gt; 0]">
+										<http:request method="POST" doc:name="Save Aborted Rejects" config-ref="System_API_Config" path="/import-rejects">
+											<http:body><![CDATA[#[output application/json ---
+												vars.invalidRecords map {
+													run_id: vars.runId,
+													record_index: $.recordIndex,
+													employee_id: $.employeeId,
+													reject_code: $.rejectCode,
+													reject_reason: $.rejectReason
+												}]]]></http:body>
+										</http:request>
+										<flow-ref name="subflow-generate-reject-file" doc:name="Generate Reject File"/>
+									</when>
+								</choice>
+
+								<http:request method="PUT" doc:name="Update Run Aborted" config-ref="System_API_Config" path="#['/import-runs/' ++ vars.runId]">
+									<http:body><![CDATA[#[output application/json --- {
+										parsedCount: vars.parsedCount,
+										insertedCount: 0,
+										updatedCount: 0,
+										rejectedCount: vars.rejectedCount,
+										rejectPercent: vars.rejectPercent,
+										runStatus: "ABORTED_THRESHOLD",
+										rejectFilePath: vars.rejectFilePath
+									}]]]></http:body>
+								</http:request>
+
+								<flow-ref name="subflow-send-summary-email" doc:name="Send summary email"/>
+
+								<choice doc:name="Is File Trigger?">
+									<when expression="#[vars.isFileTrigger == true]">
+										<file:move doc:name="Move aborted file to error" config-ref="File_Config" sourcePath="#['inbound/' ++ vars.fileName]" targetPath="${file.errorDir}" overwrite="true"/>
+									</when>
+								</choice>
+							</when>
+							<otherwise>
+								<!-- Step 7: Persistence and Batched Writes -->
+								<choice doc:name="Save Rejects if Any">
+									<when expression="#[vars.rejectedCount &gt; 0]">
+										<http:request method="POST" doc:name="Save Rejects to DB" config-ref="System_API_Config" path="/import-rejects">
+											<http:body><![CDATA[#[output application/json ---
+												vars.invalidRecords map {
+													run_id: vars.runId,
+													record_index: $.recordIndex,
+													employee_id: $.employeeId,
+													reject_code: $.rejectCode,
+													reject_reason: $.rejectReason
+												}]]]></http:body>
+										</http:request>
+										<flow-ref name="subflow-generate-reject-file" doc:name="Generate Reject File"/>
+									</when>
+								</choice>
+
+								<!-- Batch Persistence for Valid Records -->
+								<choice doc:name="Has Valid Records?">
+									<when expression="#[sizeOf(vars.validRecords) &gt; 0]">
+										<set-variable value="#[import dw::core::Arrays output application/java --- Arrays::divideBy(vars.validRecords, (p('batch.size') default '50') as Number)]" variableName="batches"/>
+										<foreach doc:name="For Each Batch" collection="#[vars.batches]">
+											<http:request method="POST" doc:name="Persist Employee Batch" config-ref="System_API_Config" path="/employees/batch">
+												<http:body><![CDATA[#[%dw 2.0
+output application/json
+---
+payload map ((item) -> {
+	employee_id: item.employeeId,
+	first_name: item.firstName,
+	last_name: item.lastName,
+	date_of_birth: item.dateOfBirth,
+	date_of_joining: item.dateOfJoining,
+	official_email: item.officialEmail,
+	mobile: item.mobile,
+	department_key: item.departmentKey,
+	designation: item.designation,
+	grade: item.grade,
+	location_key: item.locationKey,
+	employment_type: upper(item.employmentType),
+	manager_key: if (isEmpty(item.managerId)) null else item.managerId,
+	employee_status: "ACTIVE",
+	source_run_id: vars.runId
+})]]]></http:body>
+											</http:request>
+											<logger level="INFO" doc:name="Log batch progress" message="#[output text/plain --- &quot;[&quot; ++ (vars.runId default '') ++ &quot;] Processed batch &quot; ++ (vars.counter as String default '1') ++ &quot; of &quot; ++ (sizeOf(vars.batches default []) as String)]"/>
+										</foreach>
+									</when>
+								</choice>
+
+								<!-- Calculate Inserted vs Updated Counts -->
+								<set-variable value="#[sizeOf(vars.validRecords filter ($.isExistingInDb == false))]" variableName="insertedCount"/>
+								<set-variable value="#[sizeOf(vars.validRecords filter ($.isExistingInDb == true))]" variableName="updatedCount"/>
+								<set-variable value='#[if (vars.rejectedCount == 0) "SUCCESS" else "PARTIAL_SUCCESS"]' variableName="runStatus"/>
+
+								<!-- Update Run Record in DB -->
+								<http:request method="PUT" doc:name="Update Run Completed" config-ref="System_API_Config" path="#['/import-runs/' ++ vars.runId]">
+									<http:body><![CDATA[#[output application/json --- {
+										parsedCount: vars.parsedCount,
+										insertedCount: vars.insertedCount,
+										updatedCount: vars.updatedCount,
+										rejectedCount: vars.rejectedCount,
+										rejectPercent: vars.rejectPercent,
+										runStatus: vars.runStatus,
+										rejectFilePath: vars.rejectFilePath
+									}]]]></http:body>
+								</http:request>
+
+								<!-- Send Summary Notification Email -->
+								<flow-ref name="subflow-send-summary-email" doc:name="Send summary email"/>
+
+								<!-- Archive Inbound File -->
+								<choice doc:name="Is File Trigger?">
+									<when expression="#[vars.isFileTrigger == true]">
+										<file:move doc:name="Move to archive" config-ref="File_Config" sourcePath="#['inbound/' ++ vars.fileName]" targetPath="${file.archiveDir}" overwrite="true"/>
+									</when>
+								</choice>
+
+								<logger level="INFO" doc:name="Log run finished" message="#[output text/plain --- &quot;[&quot; ++ (vars.runId default '') ++ &quot;] Completed with status &quot; ++ (vars.runStatus default '') ++ &quot;. Inserted: &quot; ++ (vars.insertedCount as String default '0') ++ &quot;, Updated: &quot; ++ (vars.updatedCount as String default '0') ++ &quot;, Rejected: &quot; ++ (vars.rejectedCount as String default '0')]"/>
+							</otherwise>
+						</choice>
+					</otherwise>
+				</choice>
+			</otherwise>
+		</choice>
+	</flow>
+
+	<!-- Subflow: Generate Reject File -->
+	<sub-flow name="subflow-generate-reject-file" doc:name="Subflow Generate Reject File">
+		<set-variable value="#['reject/rejects_' ++ vars.fileName]" variableName="rejectRelativePath"/>
+		<choice doc:name="Format Check for Reject File">
+			<when expression='#[vars.fileFormat == "XML"]'>
+				<ee:transform doc:name="Format XML Rejects">
+					<ee:message>
+						<ee:set-payload resource="dwl/toRejectXml.dwl"/>
+					</ee:message>
+				</ee:transform>
+			</when>
+			<otherwise>
+				<ee:transform doc:name="Format CSV Rejects">
+					<ee:message>
+						<ee:set-payload resource="dwl/toRejectCsv.dwl"/>
+					</ee:message>
+				</ee:transform>
+			</otherwise>
+		</choice>
+		<file:write doc:name="Write Reject File" config-ref="File_Config" path="#[vars.rejectRelativePath]" createParentDirectories="true"/>
+		<set-variable value="#[p('file.workingDir') ++ '\\' ++ vars.rejectRelativePath]" variableName="rejectFilePath"/>
+		<logger level="INFO" doc:name="Log reject file written" message="#[output text/plain --- &quot;[&quot; ++ (vars.runId default '') ++ &quot;] Reject file written to: &quot; ++ (vars.rejectFilePath default '')]"/>
+	</sub-flow>
+
+	<!-- Subflow: Send Summary Email -->
+	<sub-flow name="subflow-send-summary-email" doc:name="Subflow Send Summary Email">
+		<ee:transform doc:name="Format Email Subject and Body">
+			<ee:message>
+				<ee:set-payload resource="dwl/toSummaryEmail.dwl"/>
+			</ee:message>
+		</ee:transform>
+		<set-variable value="#[payload.subject]" variableName="emailSubject"/>
+		<set-variable value="#[payload.body]" variableName="emailBody"/>
+		
+		<!-- Always write notification to audit folder -->
+		<file:write doc:name="Write Notification Audit" config-ref="File_Config" path="#['notifications/' ++ vars.runId ++ '_email.txt']" createParentDirectories="true">
+			<file:content><![CDATA[#[vars.emailBody]]]></file:content>
+		</file:write>
+
+		<choice doc:name="Is SMTP Enabled?">
+			<when expression="#[p('smtp.enabled') == 'true']">
+				<try doc:name="Try SMTP Send">
+					<email:send config-ref="Email_SMTP_Config" doc:name="Send Summary Email" fromAddress="hr-system@company.com" subject="#[vars.emailSubject]">
+						<email:to-addresses>
+							<email:to-address value="${email.hrAdmin}"/>
+						</email:to-addresses>
+						<email:body contentType="text/plain">
+							<email:content><![CDATA[#[vars.emailBody]]]></email:content>
+						</email:body>
+					</email:send>
+					<error-handler>
+						<on-error-continue doc:name="Handle SMTP failure gracefully">
+							<logger level="WARN" doc:name="Log SMTP warning" message="#[output text/plain --- &quot;[&quot; ++ (vars.runId default '') ++ &quot;] SMTP send failed. Notification preserved in notifications directory.&quot;]"/>
+						</on-error-continue>
+					</error-handler>
+				</try>
+			</when>
+		</choice>
+		<logger level="INFO" doc:name="Log email sent" message="#[output text/plain --- &quot;[&quot; ++ (vars.runId default '') ++ &quot;] Summary notification generated: &quot; ++ (vars.emailSubject default '')]"/>
+	</sub-flow>
+
 </mule>

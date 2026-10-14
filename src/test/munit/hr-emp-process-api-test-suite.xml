@@ -1,0 +1,284 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+	xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+		http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd
+		http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+	<munit:config name="hr-emp-process-api-test-suite.xml" />
+
+	<!-- Test 1: DataWeave toCanonical for CSV -->
+	<munit:test name="test-dw-toCanonical-csv" doc:id="t-001" description="Verify CSV mapping to canonical model">
+		<munit:execution>
+			<munit:set-event>
+				<munit:payload value='#[output application/csv --- [
+					{
+						employeeId: "EMP1001",
+						firstName: "John",
+						lastName: "Doe",
+						dateOfBirth: "1990-01-01",
+						dateOfJoining: "2026-09-15",
+						officialEmail: "john.doe@company.com",
+						mobile: "+91-9884011111",
+						departmentCode: "DEPT-ENG",
+						designation: "Senior Engineer",
+						locationCode: "LOC-CHN-01",
+						employmentType: "PERMANENT",
+						managerId: "EMP10002"
+					}
+				]]' />
+				<munit:variables>
+					<munit:variable key="fileFormat" value="CSV" />
+				</munit:variables>
+			</munit:set-event>
+			<ee:transform doc:name="Transform to Canonical">
+				<ee:message>
+					<ee:set-payload resource="dwl/toCanonical.dwl" />
+				</ee:message>
+			</ee:transform>
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Record Count" actual="#[payload.recordCount]" expected="#[1]" />
+			<munit-tools:assert-equals doc:name="Assert Source System" actual="#[payload.sourceSystem]" expected='#["HRMS-CSV"]' />
+			<munit-tools:assert-equals doc:name="Assert Employee ID" actual="#[payload.records[0].employeeId]" expected='#["EMP1001"]' />
+			<munit-tools:assert-equals doc:name="Assert Dept Code" actual="#[payload.records[0].departmentCode]" expected='#["DEPT-ENG"]' />
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 2: DataWeave toCanonical for XML with Header -->
+	<munit:test name="test-dw-toCanonical-xml" doc:id="t-002" description="Verify XML mapping and header parsing">
+		<munit:execution>
+			<munit:set-event>
+				<munit:payload value='#[output application/xml --- {
+					employeeImport: {
+						header: {
+							sourceSystem: "HRMS-XML",
+							generatedAt: "2026-09-11T09:00:00Z",
+							recordCount: 2
+						},
+						employees: {
+							employee: {
+								employeeId: "EMP2001",
+								firstName: "Jane",
+								lastName: "Smith",
+								dateOfBirth: "1992-05-14",
+								dateOfJoining: "2026-09-15",
+								officialEmail: "jane.smith@company.com",
+								mobile: "+91-9884022222",
+								departmentCode: "DEPT-FIN",
+								designation: "Finance Analyst",
+								locationCode: "LOC-BLR-02",
+								employmentType: "PERMANENT",
+								managerId: "EMP10008"
+							},
+							employee: {
+								employeeId: "EMP2002",
+								firstName: "Bob",
+								lastName: "Ray",
+								dateOfBirth: "1994-08-10",
+								dateOfJoining: "2026-09-15",
+								officialEmail: "bob.ray@company.com",
+								mobile: "+91-9884033333",
+								departmentCode: "DEPT-ENG",
+								designation: "Engineer",
+								locationCode: "LOC-CHN-01",
+								employmentType: "PERMANENT",
+								managerId: "EMP2001"
+							}
+						}
+					}
+				}]' />
+				<munit:variables>
+					<munit:variable key="fileFormat" value="XML" />
+				</munit:variables>
+			</munit:set-event>
+			<ee:transform doc:name="Transform XML to Canonical">
+				<ee:message>
+					<ee:set-payload resource="dwl/toCanonical.dwl" />
+				</ee:message>
+			</ee:transform>
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Record Count" actual="#[payload.recordCount]" expected="#[2]" />
+			<munit-tools:assert-equals doc:name="Assert Declared Count" actual="#[payload.declaredCount]" expected="#[2]" />
+			<munit-tools:assert-equals doc:name="Assert Source System" actual="#[payload.sourceSystem]" expected='#["HRMS-XML"]' />
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 3: Validation, Enrichment, and Forward Manager Resolution -->
+	<munit:test name="test-dw-validateAndEnrich" doc:id="t-003" description="Verify validation, enrichment, and forward reference resolution">
+		<munit:execution>
+			<munit:set-event>
+				<munit:variables>
+					<munit:variable key="departments" value='#[output application/json --- [
+						{ department_key: 1, department_code: "DEPT-ENG", department_name: "Engineering" },
+						{ department_key: 2, department_code: "DEPT-FIN", department_name: "Finance" }
+					]]' />
+					<munit:variable key="locations" value='#[output application/json --- [
+						{ location_key: 1, location_code: "LOC-CHN-01", location_name: "Chennai" },
+						{ location_key: 2, location_code: "LOC-BLR-02", location_name: "Bangalore" }
+					]]' />
+					<munit:variable key="designations" value='#[output application/json --- [
+						{ designation: "Engineer", grade: "G4" },
+						{ designation: "Manager", grade: "G6" }
+					]]' />
+					<munit:variable key="existingEmployees" value='#[output application/json --- [
+						{ employee_id: "EMP10002", official_email: "anil.k@company.com" }
+					]]' />
+					<munit:variable key="canonicalRecords" value='#[output application/json --- [
+						{
+							recordIndex: 1,
+							employeeId: "EMP5001",
+							firstName: "Subordinate",
+							lastName: "User",
+							dateOfBirth: "1995-01-01",
+							dateOfJoining: "2026-09-15",
+							officialEmail: "sub.u@company.com",
+							mobile: "+91-9884055551",
+							departmentCode: "DEPT-ENG",
+							designation: "Engineer",
+							locationCode: "LOC-CHN-01",
+							employmentType: "PERMANENT",
+							managerId: "EMP5002"
+						},
+						{
+							recordIndex: 2,
+							employeeId: "EMP5002",
+							firstName: "Manager",
+							lastName: "User",
+							dateOfBirth: "1985-01-01",
+							dateOfJoining: "2026-09-15",
+							officialEmail: "mgr.u@company.com",
+							mobile: "+91-9884055552",
+							departmentCode: "DEPT-ENG",
+							designation: "Manager",
+							locationCode: "LOC-CHN-01",
+							employmentType: "PERMANENT",
+							managerId: "EMP10002"
+						},
+						{
+							recordIndex: 3,
+							employeeId: "EMP5003",
+							firstName: "Invalid",
+							lastName: "Dept",
+							dateOfBirth: "1990-01-01",
+							dateOfJoining: "2026-09-15",
+							officialEmail: "inv.d@company.com",
+							mobile: "+91-9884055553",
+							departmentCode: "DEPT-UNKNOWN",
+							designation: "Engineer",
+							locationCode: "LOC-CHN-01",
+							employmentType: "PERMANENT",
+							managerId: "EMP10002"
+						}
+					]]' />
+				</munit:variables>
+			</munit:set-event>
+			<ee:transform doc:name="Validate and Enrich">
+				<ee:message>
+					<ee:set-payload resource="dwl/validateAndEnrich.dwl" />
+				</ee:message>
+			</ee:transform>
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Valid Records Size" actual="#[sizeOf(payload.valid)]" expected="#[2]" />
+			<munit-tools:assert-equals doc:name="Assert Invalid Records Size" actual="#[sizeOf(payload.invalid)]" expected="#[1]" />
+			<munit-tools:assert-equals doc:name="Assert Dept Key Enriched" actual="#[payload.valid[0].departmentKey]" expected="#[1]" />
+			<munit-tools:assert-equals doc:name="Assert Grade Enriched" actual="#[payload.valid[0].grade]" expected='#["G4"]' />
+			<munit-tools:assert-equals doc:name="Assert Reject Code" actual="#[payload.invalid[0].rejectCode]" expected='#["ERR_REF_DEPARTMENT_NOT_FOUND"]' />
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 4: Reject Formatting for CSV and XML -->
+	<munit:test name="test-dw-reject-formatting" doc:id="t-004" description="Verify reject formatting for CSV and XML">
+		<munit:execution>
+			<munit:set-event>
+				<munit:variables>
+					<munit:variable key="runId" value='#["RUN-TEST-001"]' />
+					<munit:variable key="invalidRecords" value='#[output application/json --- [
+						{
+							recordIndex: 1,
+							employeeId: "EMP999",
+							firstName: "Bad",
+							lastName: "Record",
+							dateOfBirth: "2015-01-01",
+							dateOfJoining: "2026-09-15",
+							officialEmail: "bad@company.com",
+							mobile: "+91-9884099999",
+							departmentCode: "DEPT-ENG",
+							designation: "Engineer",
+							locationCode: "LOC-CHN-01",
+							employmentType: "PERMANENT",
+							managerId: "EMP10002",
+							rejectReason: "Employee age (11) is below minimum required age of 18"
+						}
+					]]' />
+				</munit:variables>
+			</munit:set-event>
+			<ee:transform doc:name="Format Reject CSV">
+				<ee:message>
+					<ee:set-payload resource="dwl/toRejectCsv.dwl" />
+				</ee:message>
+			</ee:transform>
+			<set-variable value="#[payload]" variableName="csvRejectPayload" />
+			<ee:transform doc:name="Format Reject XML">
+				<ee:message>
+					<ee:set-payload resource="dwl/toRejectXml.dwl" />
+				</ee:message>
+			</ee:transform>
+			<set-variable value="#[payload]" variableName="xmlRejectPayload" />
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-that doc:name="Assert CSV has rejectReason" expression="#[output application/java --- vars.csvRejectPayload != null]" is="#[MunitTools::equalTo(true)]" />
+			<munit-tools:assert-that doc:name="Assert XML has rejectReason" expression="#[output application/java --- vars.xmlRejectPayload.employeeImportRejects.employees.employee.rejectReason as String]" is="#[MunitTools::notNullValue()]" />
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 5: Summary Email Generation -->
+	<munit:test name="test-dw-summary-email" doc:id="t-005" description="Verify summary email format matching PDF template">
+		<munit:execution>
+			<munit:set-event>
+				<munit:variables>
+					<munit:variable key="runId" value='#["RUN-TEST-002"]' />
+					<munit:variable key="fileName" value='#["EMP_IMPORT_TEST.csv"]' />
+					<munit:variable key="fileFormat" value='#["CSV"]' />
+					<munit:variable key="sourceSystem" value='#["HRMS-CSV"]' />
+					<munit:variable key="runStatus" value='#["PARTIAL_SUCCESS"]' />
+					<munit:variable key="declaredCount" value="#[null]" />
+					<munit:variable key="parsedCount" value="#[5]" />
+					<munit:variable key="insertedCount" value="#[4]" />
+					<munit:variable key="updatedCount" value="#[0]" />
+					<munit:variable key="rejectedCount" value="#[1]" />
+					<munit:variable key="rejectPercent" value="#[20.0]" />
+					<munit:variable key="rejectFilePath" value='#["C:\\hr-import\\reject\\rejects_EMP_IMPORT_TEST.csv"]' />
+					<munit:variable key="invalidRecords" value='#[output application/json --- [
+						{
+							recordIndex: 5,
+							employeeId: "EMP10045",
+							rejectCode: "ERR_REF_DEPARTMENT_NOT_FOUND",
+							rejectReason: "Department DEPT-XXX does not exist in the department master"
+						}
+					]]' />
+				</munit:variables>
+			</munit:set-event>
+			<ee:transform doc:name="Format Summary Email">
+				<ee:message>
+					<ee:set-payload resource="dwl/toSummaryEmail.dwl" />
+				</ee:message>
+			</ee:transform>
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-that doc:name="Assert Subject" expression="#[payload.subject]" is='#[MunitTools::containsString("Employee Import PARTIAL_SUCCESS")]' />
+			<munit-tools:assert-that doc:name="Assert Body Greeting" expression="#[payload.body]" is='#[MunitTools::containsString("Dear HR Administrator,")]' />
+			<munit-tools:assert-that doc:name="Assert Body Summary" expression="#[payload.body]" is='#[MunitTools::containsString("Records parsed   : 5")]' />
+			<munit-tools:assert-that doc:name="Assert Body Rejection Code" expression="#[payload.body]" is='#[MunitTools::containsString("ERR_REF_DEPARTMENT_NOT_FOUND")]' />
+		</munit:validation>
+	</munit:test>
+
+</mule>
