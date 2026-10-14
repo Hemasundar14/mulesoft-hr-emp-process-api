@@ -1,14 +1,59 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<mule xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns="http://www.mulesoft.org/schema/mule/core"
-	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
-	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
-http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd">
-	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="0320929a-b285-4421-aa30-b52b34d44b98" >
+<mule xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="62cc8d9b-b6a1-47f0-880d-8680a76dc83d" >
 		<http:listener-connection host="0.0.0.0" port="8082" />
 	</http:listener-config>
-	<flow name="hr-emp-process-apiFlow" doc:id="42fd047f-0b20-4943-b5d1-aafcc3ad8f9a" >
-		<http:listener doc:name="Listener" doc:id="b4e072f2-2d0a-46ea-9888-30536a4f4d7b" config-ref="HTTP_Listener_config" path="/import-employees" allowedMethods="POST"/>
-		<set-payload value='#[output application/json --- { message: "received", fileName: attributes.queryParams.fileName, rows: sizeOf(payload) }]' doc:name="Set Payload" doc:id="5eb4c990-2212-468c-8f22-d5ac721d5b81" />
+	<http:request-config name="System_API_Config" doc:name="HTTP Request configuration" doc:id="8b75c057-ae88-4fd4-aa91-7afd85491351" basePath="/api" >
+		<http:request-connection host="localhost" port="8081" />
+	</http:request-config>
+	<http:request-config name="HTTP_Request_configuration" doc:name="HTTP Request configuration" doc:id="a86cfae9-b89a-4086-8b7b-c3794913fcf6" basePath="/api" >
+		<http:request-connection host="localhost" port="8081" />
+	</http:request-config>
+	<flow name="hr-emp-process-apiFlow" doc:id="fb093690-5828-415b-bff7-a0f5b6e3dc13" >
+		<http:listener doc:name="Listener" doc:id="0fe446cd-1126-48da-8fbd-28c40e6692fb" config-ref="HTTP_Listener_config" path="/import-employees" allowedMethods="POST"/>
+		<set-variable value="#[payload]" doc:name="Save rows" doc:id="34520341-bc00-4a40-bd85-a99a2d9dc381" variableName="rows"/>
+		<set-payload value='#[output application/json --- { message: "received", fileName: attributes.queryParams.fileName, rows: sizeOf(payload) }]' doc:name="Set Payload" doc:id="71e418a4-2b71-4dab-9d93-889502d779d1" />
+		<http:request method="GET" doc:name="Get departments" doc:id="cc7aec86-9b3d-4461-8b1d-b2162ab02c92" config-ref="System_API_Config" path="/departments" target="departments"/>
+		<http:request method="GET" doc:name="Get locations" doc:id="f5dea4c6-3ba1-4f70-9a62-e7fa50b5f7cf" config-ref="System_API_Config" path="/locations" target="locations"/>
+		<ee:transform doc:name="Transform Message" doc:id="5b6113d9-0ba5-4e70-82d8-2d461b5fe963" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+var deptKeys = vars.departments map ($.department_key as String)
+var locKeys = vars.locations map ($.location_key as String)
+var checked = vars.rows map (r) -> r ++ {
+  reason: if (!(deptKeys contains (r.department_key as String))) "Invalid department_key"
+          else if (!(locKeys contains (r.location_key as String))) "Invalid location_key"
+          else if (!((r.official_email default "") matches /^[^@\s]+@[^@\s]+\.[^@\s]+$/)) "Invalid official_email"
+          else null
+}
+---
+{
+  valid: checked filter ($.reason == null) map ($ - "reason"),
+  invalid: checked filter ($.reason != null)
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<set-variable value="#[payload]" doc:name="Save split" doc:id="95085d09-c830-4186-8c04-08be32470b08" variableName="split"/>
+		<http:request method="POST" doc:name="Save valid employees" doc:id="12b3d4a0-5cbf-44b9-b2d9-a49652024d9a" config-ref="HTTP_Request_configuration" path="/employees/batch">
+			<http:body ><![CDATA[#[vars.split.valid]]]></http:body>
+		</http:request>
+		<foreach doc:name="For Each" doc:id="0aad2640-f2fd-415c-9644-82e979d964dc" collection="#[vars.split.invalid]">
+			<http:request method="POST" doc:name="Save rejects" doc:id="034ac1e2-afd2-4595-b754-61ad17abe559" path="/import-rejects" config-ref="System_API_Config">
+				<http:body><![CDATA[#[output application/json ---
+{
+    run_id: payload.source_run_id default "run-001",
+  record_index: vars.counter,
+  employee_id: payload.employee_id,
+  reject_code: if (payload.reason contains "email") "INVALID_EMAIL" else "INVALID_REFERENCE",
+  reject_reason: payload.reason
+}]]]></http:body>
+			</http:request>
+		</foreach>
 	</flow>
 </mule>
